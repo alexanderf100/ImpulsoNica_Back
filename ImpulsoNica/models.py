@@ -140,6 +140,7 @@ class Empresas(models.Model):
     tipoempresaid = models.ForeignKey(CatTiposEmpresa, models.DO_NOTHING, db_column='TipoEmpresaId')
     fecharegistro = models.DateTimeField(blank=True, null=True, db_column='FechaRegistro')
     municipioid = models.ForeignKey(Municipios, models.DO_NOTHING, db_column='MunicipioId')
+    fotoperfilurl = models.TextField(db_column='FotoPerfilUrl', blank=True, null=True)
 
     class Meta:
         managed = False
@@ -169,6 +170,8 @@ class Candidatos(models.Model):
     fecharegistro = models.DateTimeField(blank=True, null=True, db_column='FechaRegistro')
     municipioid = models.ForeignKey(Municipios, models.DO_NOTHING, db_column='MunicipioId')
     curriculumid = models.OneToOneField(Curriculum, models.DO_NOTHING, db_column='CurriculumId')
+    fotoperfilurl = models.CharField(db_column='FotoPerfilUrl', max_length=500, blank=True, null=True)
+    sobre_mi = models.CharField(max_length=1000, blank=True, null=True, db_column='Sobre_mi')
 
     class Meta:
         managed = False
@@ -185,6 +188,7 @@ class Empleos(models.Model):
     fechapublicacion = models.DateTimeField(blank=True, null=True, db_column='FechaPublicacion')
     fechacierre = models.DateTimeField(blank=True, null=True, db_column='FechaCierre')
     empresaid = models.ForeignKey(Empresas, models.DO_NOTHING, db_column='EmpresaId')
+    municipioid = models.ForeignKey(Municipios, models.DO_NOTHING, db_column='MunicipioId', blank=True, null=True)
 
     class Meta:
         managed = False
@@ -272,3 +276,4 @@ class EmpleoRequisitos(models.Model):
     class Meta:
         managed = False
         db_table = 'Empleo_Requisitos'
+

@@ -20,7 +20,9 @@ from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-
+from ImpulsoNica.views import CustomTokenObtainPairView
+from django.conf import settings
+from django.conf.urls.static import static
 
 #Estructura de la documentación
 schema_view = get_schema_view(
@@ -39,7 +41,8 @@ schema_view = get_schema_view(
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('ImpulsoNica.urls')),
-    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'), #para obtener el tokens
+    path('api/dashboard/', include('dashboard_api.urls')),
+    path('api/token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'), #para obtener el tokens
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'), #para actualizar el tokens ya vencido
 
     # Swagger UI para ver la documentación
@@ -49,10 +52,13 @@ urlpatterns = [
 
 ]
  #para mostrar una vista de bienvenida en la raiz de impulsonica
-from ImpulsoNica.views import home
+from ImpulsoNica.views import home, CustomTokenObtainPairView
 
 urlpatterns += [
     path('', home),
+
 ]
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 
