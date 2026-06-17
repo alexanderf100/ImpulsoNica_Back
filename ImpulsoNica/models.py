@@ -125,6 +125,7 @@ class Administradores(models.Model):
     contrasena = models.CharField(max_length=255, db_column='Contrasena')
     fecharegistro = models.DateTimeField(blank=True, null=True, db_column='FechaRegistro')
     municipioid = models.ForeignKey(Municipios, models.DO_NOTHING, db_column='MunicipioId')
+    fotoperfilurl = models.CharField(max_length=500, db_column='FotoPerfilUrl', blank=True, null=True)
 
     class Meta:
         managed = False

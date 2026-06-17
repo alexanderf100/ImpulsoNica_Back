@@ -10,7 +10,7 @@ from rest_framework import status
 from django.contrib.auth.models import User
 from django.db import transaction
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from .models import Candidatos, Empresas
+from .models import Candidatos, Empresas, Administradores
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.core.files.storage import FileSystemStorage
 import traceback
@@ -28,18 +28,32 @@ class SubirImagenView(APIView):
             return Response({'error': 'No se envió ninguna imagen'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Buscamos quién hizo la petición: Si fue un candidato o una empresa
-            candidato = Candidatos.objects.filter(correo=user.username).first()
-            empresa = Empresas.objects.filter(correo=user.username).first()
+            # 👇 BÚSQUEDA ROBUSTA ABSOLUTA PARA TODOS LOS ROLES 👇
+            candidato = Candidatos.objects.filter(correo=user.username).first() or Candidatos.objects.filter(
+                correo=user.email).first()
+            empresa = Empresas.objects.filter(correo=user.username).first() or Empresas.objects.filter(
+                correo=user.email).first()
 
-            usuario_perfil = candidato or empresa
+            admin = Administradores.objects.filter(usuario=user.username).first()
+            if not admin:
+                admin = Administradores.objects.filter(correo=user.username).first()
+            if not admin and user.email:
+                admin = Administradores.objects.filter(correo=user.email).first()
+
+            usuario_perfil = candidato or empresa or admin
 
             if usuario_perfil:
                 fs = FileSystemStorage()
                 ext = archivo.name.split('.')[-1]
 
                 # Asignamos un prefijo para que no choquen IDs iguales de tablas distintas
-                prefijo = "candidato" if candidato else "empresa"
+                if candidato:
+                    prefijo = "candidato"
+                elif empresa:
+                    prefijo = "empresa"
+                else:
+                    prefijo = "admin"
+
                 nombre_archivo = f"perfil_{prefijo}_{user.id}.{ext}"
 
                 if fs.exists(nombre_archivo):
@@ -48,7 +62,7 @@ class SubirImagenView(APIView):
                 saved_name = fs.save(nombre_archivo, archivo)
                 foto_url = fs.url(saved_name)
 
-                # Ambos modelos deben tener el campo fotoperfilurl creado en SQL Server
+                # Todos los modelos (Candidatos, Empresas, Administradores) ahora tienen fotoperfilurl
                 usuario_perfil.fotoperfilurl = foto_url
                 usuario_perfil.save()
 
@@ -57,6 +71,7 @@ class SubirImagenView(APIView):
             return Response({'error': 'Perfil no encontrado'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             print("--- ERROR AL SUBIR IMAGEN ---")
+            import traceback
             traceback.print_exc()
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -68,9 +83,34 @@ class MiPerfilView(APIView):
         user = request.user
 
         # ----------------------------------------------------
+        # BLOQUE 0: RESPUESTA PARA ADMINISTRADORES
+        # ----------------------------------------------------
+        if user.is_superuser or Administradores.objects.filter(
+                correo=user.email).exists() or Administradores.objects.filter(usuario=user.username).exists():
+            admin_db = Administradores.objects.filter(correo=user.email).first() or Administradores.objects.filter(
+                usuario=user.username).first()
+
+            # Verificamos si el admin ya subió una foto a la BD, si no, usa el avatar por defecto
+            foto_url = '/imgn/cv.png'
+            if admin_db and hasattr(admin_db, 'fotoperfilurl') and admin_db.fotoperfilurl:
+                timestamp = int(datetime.datetime.now().timestamp())
+                foto_url = f"{admin_db.fotoperfilurl}?t={timestamp}"
+
+            return Response({
+                'tipo': 'admin',
+                'datos': {
+                    'nombre': admin_db.nombre if admin_db else 'Super',
+                    'apellido': admin_db.apellido if admin_db else 'Administrador',
+                    'correo': admin_db.correo if admin_db else (user.email or user.username),
+                    'foto_url': foto_url
+                }
+            }, status=status.HTTP_200_OK)
+
+        # ----------------------------------------------------
         # BLOQUE 1: RESPUESTA PARA CANDIDATOS
         # ----------------------------------------------------
-        candidato = Candidatos.objects.filter(correo=user.username).first()
+        candidato = Candidatos.objects.filter(correo=user.username).first() or Candidatos.objects.filter(
+            correo=user.email).first()
         if candidato:
             serializer = CandidatosSerializer(candidato)
             datos = serializer.data
@@ -81,12 +121,10 @@ class MiPerfilView(APIView):
             else:
                 datos['foto_url'] = None
 
-            # 👇 AGREGAR ESTO: Inyectar datos de ubicación y nombres legibles 👇
             if hasattr(candidato, 'municipioid') and candidato.municipioid:
                 datos['municipio_nombre'] = candidato.municipioid.nombre
                 if hasattr(candidato.municipioid, 'departamentoid') and candidato.municipioid.departamentoid:
                     datos['departamento_nombre'] = candidato.municipioid.departamentoid.nombre
-                    # Extraemos el ID del departamento para que el JS pueda hacer la cascada
                     datos['departamento_id'] = getattr(candidato.municipioid.departamentoid, 'departamentoid',
                                                        getattr(candidato.municipioid.departamentoid, 'id', None))
 
@@ -96,7 +134,6 @@ class MiPerfilView(APIView):
                 datos['estado_civil_nombre'] = candidato.estadocivilid.nombre
             if hasattr(candidato, 'nacionalidadid') and candidato.nacionalidadid:
                 datos['nacionalidad_nombre'] = candidato.nacionalidadid.nombre
-            # 👆 FIN DE LO NUEVO 👆
 
             if candidato.curriculumid:
                 datos['titulo'] = candidato.curriculumid.profesion
@@ -118,7 +155,6 @@ class MiPerfilView(APIView):
                                            'nombre': i.idiomaid.nombre, 'nivel': i.nivel} for i in idiomas_qs if
                                           i.idiomaid]
 
-                # 👇 AGREGAR ESTAS LÍNEAS PARA EXTRAER EXPERIENCIA Y REFERENCIAS 👇
                 experiencias_qs = ExperienciaLaboral.objects.filter(curriculumid=candidato.curriculumid).order_by(
                     '-fechainicio')
                 datos['experiencias'] = [{
@@ -139,7 +175,6 @@ class MiPerfilView(APIView):
                     'telefono': ref.telefono,
                     'correo': ref.correo
                 } for ref in referencias_qs]
-                # 👆 FIN DE LO NUEVO 👆
 
             return Response({'tipo': 'candidato', 'datos': datos})
 
@@ -147,19 +182,18 @@ class MiPerfilView(APIView):
         # BLOQUE 2: RESPUESTA PARA EMPRESAS
         # ----------------------------------------------------
         try:
-            empresa = Empresas.objects.filter(correo=user.username).first()
+            empresa = Empresas.objects.filter(correo=user.username).first() or Empresas.objects.filter(
+                correo=user.email).first()
             if empresa:
                 serializer = EmpresasSerializer(empresa)
                 datos = serializer.data
 
-                # 1. Foto anti-caché segura
                 if hasattr(empresa, 'fotoperfilurl') and empresa.fotoperfilurl:
                     timestamp = int(datetime.datetime.now().timestamp())
                     datos['foto_url'] = f"{empresa.fotoperfilurl}?t={timestamp}"
                 else:
                     datos['foto_url'] = None
 
-                # 2. Enriquecer con nombres legibles (con validación de seguridad)
                 datos['sector_nombre'] = empresa.sectorid.nombre if hasattr(empresa,
                                                                             'sectorid') and empresa.sectorid else None
                 datos['tipo_empresa_nombre'] = empresa.tipoempresaid.nombre if hasattr(empresa,
@@ -169,7 +203,6 @@ class MiPerfilView(APIView):
                     datos['municipio_nombre'] = empresa.municipioid.nombre
                     if hasattr(empresa.municipioid, 'departamentoid') and empresa.municipioid.departamentoid:
                         datos['departamento_nombre'] = empresa.municipioid.departamentoid.nombre
-                        # ID para preseleccionar en el modal de edición
                         datos['departamento_id'] = getattr(empresa.municipioid.departamentoid, 'departamentoid', None)
                 else:
                     datos['municipio_nombre'] = None
@@ -187,69 +220,59 @@ class MiPerfilView(APIView):
         user = request.user
         data = request.data
 
-        # Actualizar si es candidato
-        candidato = Candidatos.objects.filter(correo=user.username).first()
+        # 1. Intentar actualizar si es Candidato
+        candidato = Candidatos.objects.filter(correo=user.username).first() or Candidatos.objects.filter(
+            correo=user.email).first()
         if candidato:
             serializer = CandidatosSerializer(candidato, data=data, partial=True)
             if serializer.is_valid():
                 serializer.save()
 
-                if candidato.curriculumid:
-                    curriculum = candidato.curriculumid
-
-                    if 'titulo' in data:
-                        curriculum.profesion = data['titulo']
-
-                    if 'nivel_educativo_id' in data and data['nivel_educativo_id']:
-                        curriculum.niveleducativoid_id = data['nivel_educativo_id']
-
-                    curriculum.save()
-
-                    if 'habilidades' in data and isinstance(data['habilidades'], list):
-                        CurriculumHabilidades.objects.filter(curriculumid=curriculum).delete()
-                        for hab_id in data['habilidades']:
-                            CurriculumHabilidades.objects.create(
-                                curriculumid=curriculum,
-                                habilidadid_id=hab_id
-                            )
-
-                    if 'idiomas' in data and isinstance(data['idiomas'], list):
-                        CurriculumIdiomas.objects.filter(curriculumid=curriculum).delete()
-                        for idioma_obj in data['idiomas']:
-                            # Verificamos si viene como objeto (con nivel) o solo el número
-                            if isinstance(idioma_obj, dict):
-                                i_id = idioma_obj.get('id')
-                                i_nivel = idioma_obj.get('nivel', 'Básico')
-                            else:
-                                i_id = idioma_obj
-                                i_nivel = 'Básico'
-
-                            if i_id:
-                                CurriculumIdiomas.objects.create(
-                                    curriculumid=curriculum,
-                                    idiomaid_id=i_id,
-                                    nivel=i_nivel
-                                )
+                # Guardar habilidades e idiomas si es candidato
+                if 'habilidades' in data:
+                    CurriculumHabilidades.objects.filter(curriculumid=candidato.curriculumid).delete()
+                    for hab_id in data['habilidades']:
+                        CurriculumHabilidades.objects.create(curriculumid=candidato.curriculumid, habilidadid_id=hab_id)
+                if 'idiomas' in data:
+                    CurriculumIdiomas.objects.filter(curriculumid=candidato.curriculumid).delete()
+                    for idioma in data['idiomas']:
+                        CurriculumIdiomas.objects.create(curriculumid=candidato.curriculumid, idiomaid_id=idioma['id'],
+                                                         nivel=idioma['nivel'])
 
                 return Response({'mensaje': '¡Perfil actualizado exitosamente!'})
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # Actualizar si es empresa
-        empresa = Empresas.objects.filter(correo=user.username).first()
+        # 2. Intentar actualizar si es Empresa
+        empresa = Empresas.objects.filter(correo=user.username).first() or Empresas.objects.filter(
+            correo=user.email).first()
         if empresa:
             serializer = EmpresasSerializer(empresa, data=data, partial=True)
             if serializer.is_valid():
                 serializer.save()
-                return Response({'mensaje': '¡Perfil actualizado exitosamente!'})
+                return Response({'mensaje': '¡Perfil de empresa actualizado exitosamente!'})
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({'error': 'Perfil no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        # 3. Búsqueda total para el Administrador
+        admin = Administradores.objects.filter(usuario=user.username).first()
+        if not admin:
+            admin = Administradores.objects.filter(correo=user.username).first()
+        if not admin and user.email:
+            admin = Administradores.objects.filter(correo=user.email).first()
+
+        if admin:
+            serializer = AdministradoresSerializer(admin, data=data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({'mensaje': '¡Perfil de administrador actualizado exitosamente!'})
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Si el usuario logueado no existe en ninguna de las 3 tablas, devuelve 404
+        return Response({'error': 'Perfil no encontrado en la base de datos para actualizar.'},
+                        status=status.HTTP_404_NOT_FOUND)
 
     def delete(self, request):
         user = request.user
         try:
-            # Borrado lógico: Desactivamos al usuario de Django Auth.
-            # Esto impide que pueda volver a iniciar sesión sin borrar sus datos físicos (mantiene el DW intacto).
             user.is_active = False
             user.save()
             return Response({'mensaje': 'Cuenta desactivada exitosamente.'}, status=status.HTTP_200_OK)
@@ -268,7 +291,6 @@ class RegistroUsuarioView(APIView):
         email = data.get('email')
         password = data.get('password')
 
-        # Nuevos campos del frontend
         nombre_recibido = data.get('nombre', '').strip()
         apellido_recibido = data.get('apellido', '').strip()
 
@@ -282,10 +304,7 @@ class RegistroUsuarioView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Crear el usuario en el sistema de autenticación de Django
             user = User.objects.create_user(username=username, email=email, password=password)
-
-            # Obtener registros por defecto para que SQL Server no arroje error por NOT NULL
             muni_defecto = Municipios.objects.first()
 
             if tipo == 'candidato':
@@ -325,7 +344,6 @@ class RegistroUsuarioView(APIView):
             return Response({'mensaje': '¡Registro exitoso!'}, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            # Si algo falla (ej. llaves foráneas), revierte toda la transacción (borra el User también)
             transaction.set_rollback(True)
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
